@@ -1,0 +1,106 @@
+{
+  "patients": [
+    {
+      "id": "P001",
+      "image_path": "sample_images/lesion_001.jpg",
+      "description": "I noticed a small mole on my arm that has been changing color over the past few months",
+      "visual_condition": "suspicious lesion",
+      "expected_risk_score": 0.7,
+      "expected_urgency": "HIGH",
+      "notes": "Patient reports color change - red flag symptom"
+    },
+    {
+      "id": "P002",
+      "image_path": "sample_images/lesion_002.jpg",
+      "description": "Small bump on my skin that has been there for years without any changes",
+      "visual_condition": "benign nevus",
+      "expected_risk_score": 0.2,
+      "expected_urgency": "LOW",
+      "notes": "Stable lesion, no concerning symptoms"
+    },
+    {
+      "id": "P003",
+      "image_path": "sample_images/lesion_003.jpg",
+      "description": "Rapidly growing spot on my back, started bleeding recently",
+      "visual_condition": "suspicious lesion",
+      "expected_risk_score": 0.8,
+      "expected_urgency": "HIGH",
+      "notes": "Multiple red flags: rapid growth + bleeding"
+    },
+    {
+      "id": "P004",
+      "image_path": "sample_images/lesion_004.jpg",
+      "description": "Patch of dry skin that occasionally itches",
+      "visual_condition": "eczema",
+      "expected_risk_score": 0.3,
+      "expected_urgency": "LOW",
+      "notes": "Common inflammatory condition, not urgent"
+    },
+    {
+      "id": "P005",
+      "image_path": "sample_images/lesion_005.jpg",
+      "description": "Spot that seems to be spreading fast around the edge",
+      "visual_condition": "suspicious lesion",
+      "expected_risk_score": 0.6,
+      "expected_urgency": "MEDIUM",
+      "notes": "Spreading lesion - requires attention"
+    },
+    {
+      "id": "P006",
+      "image_path": "sample_images/lesion_006.jpg",
+      "description": "I've had this skin tag for a long time, no changes",
+      "visual_condition": "skin tag",
+      "expected_risk_score": 0.1,
+      "expected_urgency": "LOW",
+      "notes": "Benign lesion, no action needed"
+    },
+    {
+      "id": "P007",
+      "image_path": "sample_images/lesion_007.jpg",
+      "description": "Painful red bump with fever and spreading infection",
+      "visual_condition": "infected lesion",
+      "expected_risk_score": 0.9,
+      "expected_urgency": "HIGH",
+      "notes": "Systemic symptoms - immediate care needed"
+    },
+    {
+      "id": "P008",
+      "image_path": "sample_images/lesion_008.jpg",
+      "description": "Small mole that hasn't changed in 5 years",
+      "visual_condition": "benign nevus",
+      "expected_risk_score": 0.2,
+      "expected_urgency": "LOW",
+      "notes": "Stable mole, no concerns"
+    }
+  ],
+  "red_flags": [
+    "bleeding",
+    "rapidly growing",
+    "changing color",
+    "fever",
+    "severe pain",
+    "spreading fast"
+  ],
+  "condition_categories": {
+    "suspicious lesion": {
+      "risk_increment": 0.5,
+      "description": "Lesion with potential malignant features"
+    },
+    "benign nevus": {
+      "risk_increment": 0.0,
+      "description": "Non-cancerous mole"
+    },
+    "eczema": {
+      "risk_increment": 0.1,
+      "description": "Inflammatory skin condition"
+    },
+    "skin tag": {
+      "risk_increment": 0.0,
+      "description": "Benign skin growth"
+    },
+    "infected lesion": {
+      "risk_increment": 0.7,
+      "description": "Lesion with signs of infection"
+    }
+  }
+}

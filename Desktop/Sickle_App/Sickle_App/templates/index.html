@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sickle Cell Sentinel — AI Diagnostics</title>
+  <meta name="description" content="AI-powered sickle cell disease detection from blood smear images using ensemble deep learning models." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ─── Design Tokens ─────────────────────────────────────────────── */
+    :root {
+      --c-bg:        #070b14;
+      --c-surface:   #0d1525;
+      --c-surface2:  #111d30;
+      --c-border:    rgba(99,130,201,0.18);
+      --c-blue:      #4f8ef7;
+      --c-blue-glow: rgba(79,142,247,0.35);
+      --c-purple:    #a855f7;
+      --c-green:     #22d3a1;
+      --c-red:       #f04f6e;
+      --c-yellow:    #fbbf24;
+      --c-text:      #e2e8f7;
+      --c-muted:     #64748b;
+      --radius-lg:   20px;
+      --radius-md:   12px;
+      --radius-sm:   8px;
+      --shadow-lg:   0 32px 64px -16px rgba(0,0,0,.7);
+      --trans:       all .3s cubic-bezier(.4,0,.2,1);
+    }
+
+    /* ─── Reset ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--c-bg);
+      color: var(--c-text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ─── Animated mesh background ──────────────────────────────────── */
+    .mesh {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 10%, rgba(79,142,247,.12) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 80% 80%, rgba(168,85,247,.10) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 40% at 50% 50%, rgba(34,211,161,.06) 0%, transparent 50%);
+      animation: meshMove 14s ease-in-out infinite alternate;
+    }
+    @keyframes meshMove {
+      0%   { opacity: .8; transform: scale(1); }
+      100% { opacity: 1;  transform: scale(1.05) translate(1%, -1%); }
+    }
+
+    /* ─── Layout ─────────────────────────────────────────────────────── */
+    .page { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: 32px 20px 64px; }
+
+    /* ─── Header ─────────────────────────────────────────────────────── */
+    header { text-align: center; margin-bottom: 48px; }
+    .logo-badge {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: rgba(79,142,247,.12); border: 1px solid rgba(79,142,247,.25);
+      border-radius: 40px; padding: 6px 18px; font-size: .8rem;
+      font-weight: 600; letter-spacing: .08em; color: var(--c-blue);
+      text-transform: uppercase; margin-bottom: 20px;
+    }
+    .logo-badge span { font-size: 1rem; }
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 800; letter-spacing: -.02em; line-height: 1.1;
+      background: linear-gradient(135deg, #e2e8f7 30%, var(--c-blue) 70%, var(--c-purple));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text; margin-bottom: 12px;
+    }
+    header p {
+      max-width: 520px; margin: 0 auto; color: var(--c-muted); font-size: 1.05rem; line-height: 1.6;
+    }
+
+    /* ─── Glass card ─────────────────────────────────────────────────── */
+    .card {
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      backdrop-filter: blur(16px);
+      transition: var(--trans);
+    }
+    .card:hover { border-color: rgba(79,142,247,.3); }
+
+    /* ─── Upload zone ────────────────────────────────────────────────── */
+    .upload-card { padding: 40px 36px; }
+
+    .drop-zone {
+      position: relative;
+      border: 2px dashed rgba(99,130,201,.3);
+      border-radius: var(--radius-md);
+      padding: 64px 24px;
+      text-align: center; cursor: pointer;
+      transition: var(--trans);
+      background: rgba(79,142,247,.03);
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--c-blue);
+      background: rgba(79,142,247,.08);
+      box-shadow: 0 0 40px rgba(79,142,247,.12) inset;
+    }
+    .drop-zone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+
+    .drop-icon {
+      width: 72px; height: 72px; margin: 0 auto 20px;
+      background: linear-gradient(135deg, rgba(79,142,247,.2), rgba(168,85,247,.15));
+      border: 1px solid rgba(79,142,247,.3); border-radius: 18px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2.2rem; transition: var(--trans);
+    }
+    .drop-zone:hover .drop-icon { transform: scale(1.08) rotate(-3deg); }
+
+    .drop-title  { font-size: 1.15rem; font-weight: 600; margin-bottom: 6px; }
+    .drop-sub    { font-size: .875rem; color: var(--c-muted); }
+    .drop-hint   { font-size: .8rem; color: var(--c-blue); margin-top: 14px; font-weight: 500; display: none; }
+
+    /* ─── File preview chip ──────────────────────────────────────────── */
+    .file-chip {
+      display: none; align-items: center; gap: 10px;
+      margin-top: 14px; padding: 10px 16px;
+      background: rgba(34,211,161,.08); border: 1px solid rgba(34,211,161,.2);
+      border-radius: var(--radius-sm); font-size: .875rem;
+      color: var(--c-green); font-weight: 500;
+    }
+
+    /* ─── Analyze button ─────────────────────────────────────────────── */
+    .btn-analyze {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      width: 100%; margin-top: 24px;
+      padding: 16px; border: none; cursor: pointer;
+      font-family: 'Inter', sans-serif; font-size: 1rem; font-weight: 700;
+      border-radius: var(--radius-md); letter-spacing: .02em;
+      background: linear-gradient(135deg, var(--c-blue), var(--c-purple));
+      color: #fff;
+      box-shadow: 0 8px 32px rgba(79,142,247,.35);
+      transition: var(--trans);
+    }
+    .btn-analyze:hover  { opacity: .9; transform: translateY(-2px); box-shadow: 0 12px 40px rgba(79,142,247,.5); }
+    .btn-analyze:active { transform: translateY(0); }
+    .btn-analyze.loading { opacity: .7; cursor: not-allowed; }
+
+    /* ─── Error banner ───────────────────────────────────────────────── */
+    .error-banner {
+      display: flex; gap: 12px; align-items: flex-start;
+      padding: 16px 20px; margin-bottom: 24px;
+      background: rgba(240,79,110,.08); border: 1px solid rgba(240,79,110,.25);
+      border-radius: var(--radius-md); color: #fca5a5; font-size: .9rem;
+    }
+    .error-banner .icon { font-size: 1.2rem; margin-top: 1px; }
+
+    /* ─── Results grid ───────────────────────────────────────────────── */
+    .results-grid {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 24px;
+      margin-top: 32px;
+      animation: slideUp .5s ease forwards;
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 860px) { .results-grid { grid-template-columns: 1fr; } }
+
+    /* ─── Image panel ────────────────────────────────────────────────── */
+    .img-panel {
+      padding: 20px;
+      display: flex; flex-direction: column; align-items: center; gap: 16px;
+    }
+    .img-panel img {
+      width: 100%; max-width: 340px; border-radius: var(--radius-md);
+      border: 1px solid var(--c-border);
+      box-shadow: 0 12px 32px rgba(0,0,0,.5);
+      object-fit: cover;
+    }
+    .img-label {
+      font-size: .78rem; color: var(--c-muted); font-weight: 500;
+      letter-spacing: .06em; text-transform: uppercase;
+    }
+
+    /* ─── Verdict badge ──────────────────────────────────────────────── */
+    .verdict {
+      width: 100%; padding: 18px 22px;
+      border-radius: var(--radius-md);
+      display: flex; align-items: center; gap: 14px;
+      border: 1px solid;
+    }
+    .verdict.positive {
+      background: rgba(240,79,110,.08); border-color: rgba(240,79,110,.3);
+    }
+    .verdict.negative {
+      background: rgba(34,211,161,.07); border-color: rgba(34,211,161,.25);
+    }
+    .verdict-icon { font-size: 2rem; }
+    .verdict-label { font-size: .75rem; color: var(--c-muted); text-transform: uppercase; letter-spacing: .08em; }
+    .verdict-result { font-size: 1.5rem; font-weight: 800; margin: 2px 0; }
+    .verdict.positive .verdict-result { color: var(--c-red); }
+    .verdict.negative .verdict-result { color: var(--c-green); }
+    .verdict-conf { font-size: .85rem; color: var(--c-muted); }
+
+    /* ─── Analysis panel ─────────────────────────────────────────────── */
+    .analysis-panel { padding: 28px 32px; display: flex; flex-direction: column; gap: 24px; }
+
+    .section-title {
+      font-size: .75rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .1em; color: var(--c-muted); margin-bottom: 14px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .section-title::after {
+      content: ''; flex: 1; height: 1px; background: var(--c-border);
+    }
+
+    /* Ensemble pill */
+    .ensemble-pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px; border-radius: 50px;
+      font-weight: 700; font-size: .9rem;
+    }
+    .ensemble-pill.positive { background: rgba(240,79,110,.15); color: var(--c-red); border: 1px solid rgba(240,79,110,.3); }
+    .ensemble-pill.negative { background: rgba(34,211,161,.12); color: var(--c-green); border: 1px solid rgba(34,211,161,.25); }
+
+    /* ─── Model cards ────────────────────────────────────────────────── */
+    .models-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .model-row {
+      display: grid; align-items: center;
+      grid-template-columns: 180px 1fr 90px;
+      gap: 14px;
+      padding: 14px 18px;
+      background: var(--c-surface2); border-radius: var(--radius-md);
+      border: 1px solid var(--c-border);
+      transition: var(--trans);
+    }
+    .model-row:hover { border-color: rgba(79,142,247,.35); transform: translateX(4px); }
+    .model-row.best { border-color: rgba(79,142,247,.5); box-shadow: 0 0 0 1px rgba(79,142,247,.2); }
+
+    .model-name { font-size: .88rem; font-weight: 600; }
+    .model-name small { display: block; font-size: .72rem; color: var(--c-muted); font-weight: 400; margin-top: 2px; }
+
+    .bar-track {
+      height: 8px; background: rgba(255,255,255,.06);
+      border-radius: 4px; overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 4px;
+      transition: width .8s cubic-bezier(.4,0,.2,1);
+    }
+    .bar-fill.positive { background: linear-gradient(90deg, var(--c-red), #f97316); }
+    .bar-fill.negative { background: linear-gradient(90deg, var(--c-green), var(--c-blue)); }
+    .bar-fill.error    { background: var(--c-muted); }
+
+    .model-badge {
+      text-align: right; font-size: .82rem; font-weight: 700;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+    }
+    .model-badge .pct   { font-size: 1.05rem; }
+    .model-badge .label { font-size: .7rem; font-weight: 500; }
+    .label.positive { color: var(--c-red); }
+    .label.negative { color: var(--c-green); }
+    .label.error    { color: var(--c-muted); }
+
+    .best-tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: rgba(79,142,247,.15); border: 1px solid rgba(79,142,247,.3);
+      border-radius: 40px; padding: 2px 8px;
+      font-size: .65rem; font-weight: 700; color: var(--c-blue);
+      text-transform: uppercase; letter-spacing: .06em; margin-left: 6px;
+    }
+
+    /* ─── Stats row ──────────────────────────────────────────────────── */
+    .stats-row {
+      display: grid; grid-template-columns: repeat(3,1fr); gap: 12px;
+    }
+    .stat-card {
+      background: var(--c-surface2); border: 1px solid var(--c-border);
+      border-radius: var(--radius-md); padding: 16px;
+      text-align: center;
+    }
+    .stat-card .val { font-size: 1.6rem; font-weight: 800; }
+    .stat-card .sub { font-size: .72rem; color: var(--c-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; }
+
+    /* ─── Spinner ────────────────────────────────────────────────────── */
+    .spinner {
+      display: inline-block; width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,.3); border-top-color: #fff;
+      border-radius: 50%; animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Disclaimer ─────────────────────────────────────────────────── */
+    .disclaimer {
+      text-align: center; margin-top: 40px;
+      font-size: .78rem; color: var(--c-muted); line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="mesh"></div>
+  <div class="page">
+
+    <!-- ── Header ───────────────────────────────────────────────────── -->
+    <header>
+      <div class="logo-badge"><span>🧬</span> Deep Learning · Ensemble Analysis</div>
+      <h1>Sickle Cell Sentinel</h1>
+      <p>Upload a peripheral blood smear image and let four deep-learning models analyse it in seconds.</p>
+    </header>
+
+    <!-- ── Error ────────────────────────────────────────────────────── -->
+    {% if error %}
+    <div class="error-banner">
+      <span class="icon">⚠️</span>
+      <div><strong>Upload Error</strong><br>{{ error }}</div>
+    </div>
+    {% endif %}
+
+    <!-- ── Upload card ───────────────────────────────────────────────── -->
+    <div class="card upload-card">
+      <form method="POST" enctype="multipart/form-data" id="uploadForm">
+        <div class="drop-zone" id="dropZone">
+          <input type="file" name="file" id="fileInput" accept="image/*">
+          <div class="drop-icon">🔬</div>
+          <p class="drop-title">Drag &amp; drop your blood smear image</p>
+          <p class="drop-sub">PNG · JPG · BMP · TIFF &nbsp;—&nbsp; max 20 MB</p>
+          <p class="drop-hint" id="dropHint"></p>
+        </div>
+        <div class="file-chip" id="fileChip">
+          <span>📎</span><span id="fileChipName"></span>
+        </div>
+        <button type="submit" class="btn-analyze" id="analyzeBtn">
+          <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3
+                 m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547
+                 A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531
+                 c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+          </svg>
+          Analyse Image
+        </button>
+      </form>
+    </div>
+
+    <!-- ── Results ───────────────────────────────────────────────────── -->
+    {% if final %}
+    {% set pos_count = results.values() | selectattr('label','equalto','Positive') | list | length %}
+    {% set neg_count = results.values() | selectattr('label','equalto','Negative') | list | length %}
+
+    <div class="results-grid">
+
+      <!-- Image + verdict -->
+      <div class="card img-panel">
+        <p class="img-label">Uploaded Smear</p>
+        {% if filename %}
+        <img src="{{ url_for('serve_image', filename=filename) }}" alt="Blood smear">
+        {% endif %}
+
+        <div class="verdict {{ 'positive' if final.ensemble_label == 'Positive' else 'negative' }}" style="width:100%">
+          <div class="verdict-icon">{{ '🔴' if final.ensemble_label == 'Positive' else '🟢' }}</div>
+          <div>
+            <div class="verdict-label">Ensemble Verdict</div>
+            <div class="verdict-result" id="verdictResult">{{ final.ensemble_label }}</div>
+            <div class="verdict-conf">Best model confidence: {{ "%.1f"|format(final.confidence * 100) }}%</div>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-row" style="width:100%">
+          <div class="stat-card">
+            <div class="val" style="color: var(--c-red)">{{ pos_count }}</div>
+            <div class="sub">Positive votes</div>
+          </div>
+          <div class="stat-card">
+            <div class="val" style="color: var(--c-green)">{{ neg_count }}</div>
+            <div class="sub">Negative votes</div>
+          </div>
+          <div class="stat-card">
+            <div class="val" style="color: var(--c-blue)">{{ results | length }}</div>
+            <div class="sub">Models run</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Analysis panel -->
+      <div class="card analysis-panel">
+
+        <!-- Ensemble summary -->
+        <div>
+          <div class="section-title">Ensemble Decision</div>
+          <div class="ensemble-pill {{ 'positive' if final.ensemble_label == 'Positive' else 'negative' }}">
+            {{ '⚠️' if final.ensemble_label == 'Positive' else '✅' }}
+            {{ final.ensemble_label }} · {{ pos_count }}/{{ results|length }} models agree
+          </div>
+          {% if final.ensemble_label == 'Positive' %}
+          <p style="margin-top:12px; font-size:.85rem; color: var(--c-muted); line-height:1.6;">
+            Majority of models detected morphological characteristics consistent with sickle-shaped erythrocytes.
+            Clinical confirmation is recommended.
+          </p>
+          {% else %}
+          <p style="margin-top:12px; font-size:.85rem; color: var(--c-muted); line-height:1.6;">
+            No significant sickle-cell morphology detected across ensemble. Results appear within normal range.
+          </p>
+          {% endif %}
+        </div>
+
+        <!-- Individual model results -->
+        <div>
+          <div class="section-title">Individual Model Breakdown</div>
+          <div class="models-list">
+            {% for name, res in results.items() %}
+            {% set is_best = (name == final.model) %}
+            {% set cls = 'positive' if res.label == 'Positive' else ('negative' if res.label == 'Negative' else 'error') %}
+            <div class="model-row {{ 'best' if is_best else '' }}">
+              <div class="model-name">
+                {{ name }}
+                {% if is_best %}<span class="best-tag">★ Best</span>{% endif %}
+                <small>
+                  {% if name == 'CustomCNN' %}224×224 · Custom architecture
+                  {% else %}128×128 · Transfer learning
+                  {% endif %}
+                </small>
+              </div>
+
+              <div>
+                <div style="display:flex;justify-content:space-between;font-size:.7rem;color:var(--c-muted);margin-bottom:5px">
+                  <span>Positive probability</span><span>{{ res.probability }}%</span>
+                </div>
+                <div class="bar-track">
+                  <div class="bar-fill {{ cls }}" style="width: {{ res.probability }}%"></div>
+                </div>
+              </div>
+
+              <div class="model-badge">
+                <span class="pct">{{ "%.0f"|format(res.confidence * 100) }}%</span>
+                <span class="label {{ cls }}">{{ res.label }}</span>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+
+      </div><!-- /analysis-panel -->
+    </div><!-- /results-grid -->
+    {% endif %}
+
+    <p class="disclaimer">
+      ⚠️ This tool is for <strong>research and educational purposes only</strong>. It does not constitute medical advice.<br>
+      Always consult a licensed haematologist for clinical diagnosis.
+    </p>
+
+  </div><!-- /page -->
+
+  <script>
+    const fileInput  = document.getElementById('fileInput');
+    const dropZone   = document.getElementById('dropZone');
+    const dropHint   = document.getElementById('dropHint');
+    const fileChip   = document.getElementById('fileChip');
+    const fileChipName = document.getElementById('fileChipName');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const form       = document.getElementById('uploadForm');
+
+    function showFile(name) {
+      dropHint.textContent = '📁 ' + name;
+      dropHint.style.display = 'block';
+      fileChipName.textContent = name;
+      fileChip.style.display = 'flex';
+      dropZone.style.borderColor = 'var(--c-green)';
+    }
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) showFile(fileInput.files[0].name);
+    });
+
+    ['dragenter','dragover','dragleave','drop'].forEach(e =>
+      dropZone.addEventListener(e, ev => ev.preventDefault())
+    );
+    dropZone.addEventListener('dragenter', () => dropZone.classList.add('dragover'));
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', ev => {
+      dropZone.classList.remove('dragover');
+      const file = ev.dataTransfer.files[0];
+      if (file) {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        showFile(file.name);
+      }
+    });
+
+    form.addEventListener('submit', () => {
+      if (fileInput.files.length) {
+        analyzeBtn.disabled = true;
+        analyzeBtn.classList.add('loading');
+        analyzeBtn.innerHTML = '<div class="spinner"></div> Analysing — please wait…';
+      }
+    });
+
+    // Animate bars on load
+    document.querySelectorAll('.bar-fill').forEach(bar => {
+      const target = bar.style.width;
+      bar.style.width = '0';
+      setTimeout(() => bar.style.width = target, 100);
+    });
+  </script>
+</body>
+</html>

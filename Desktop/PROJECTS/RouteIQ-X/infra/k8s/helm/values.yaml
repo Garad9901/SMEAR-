@@ -1,0 +1,260 @@
+# ──────────────────────────────────────────────────────────────────
+# RouteIQ X — Helm Chart Values (Production)
+# Kubernetes-native deployment for all microservices
+# ──────────────────────────────────────────────────────────────────
+
+global:
+  imageRegistry: "ghcr.io/routeiq-x"
+  imageTag: "2.4.0"
+  environment: "production"
+  namespace: "routeiq"
+
+  # Multi-tenant config
+  tenancy:
+    enabled: true
+    maxTenants: 100
+
+  # Observability
+  observability:
+    prometheus:
+      enabled: true
+      port: 9090
+    jaeger:
+      enabled: true
+      endpoint: "http://jaeger:4317"
+    loki:
+      enabled: true
+    otel:
+      enabled: true
+      endpoint: "http://otel-collector:4317"
+
+# ── API Gateway ───────────────────────────────────────────────────
+apiGateway:
+  enabled: true
+  image: "api-gateway"
+  replicaCount: 3
+  
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  
+  service:
+    type: LoadBalancer
+    port: 8000
+  
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/rate-limit: "100"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: api.routeiq-x.io
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: routeiq-api-tls
+        hosts: ["api.routeiq-x.io"]
+  
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  
+  readinessProbe:
+    httpGet:
+      path: /api/ready
+      port: 8000
+    initialDelaySeconds: 20
+    periodSeconds: 5
+  
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+# ── AI Engine ─────────────────────────────────────────────────────
+aiEngine:
+  enabled: true
+  image: "ai-engine"
+  replicaCount: 3
+  
+  resources:
+    requests:
+      cpu: "2000m"
+      memory: "4Gi"
+    limits:
+      cpu: "8000m"
+      memory: "16Gi"
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+  
+  nodeSelector:
+    workload: "ml-inference"
+  
+  env:
+    MLFLOW_TRACKING_URI: "http://mlflow:5000"
+    MODEL_CACHE_SIZE_GB: "8"
+    BATCH_SIZE: "32"
+    INFERENCE_TIMEOUT_MS: "500"
+
+# ── Geospatial Engine ─────────────────────────────────────────────
+geospatialEngine:
+  enabled: true
+  image: "geospatial-engine"
+  replicaCount: 2
+  
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "4Gi"
+    limits:
+      cpu: "4000m"
+      memory: "16Gi"  # Memory-intensive for GeoPandas + Rasterio
+  
+  nodeSelector:
+    workload: "geospatial"
+  
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: "100Gi"
+    mountPath: "/tmp/geospatial"
+
+# ── Agent Orchestrator ────────────────────────────────────────────
+agentOrchestrator:
+  enabled: true
+  image: "agents"
+  replicaCount: 3
+  
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 15
+
+# ── Budget Optimizer ──────────────────────────────────────────────
+optimizer:
+  enabled: true
+  image: "optimizer"
+  replicaCount: 2
+  
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+
+# ── Celery Workers ────────────────────────────────────────────────
+celeryWorker:
+  enabled: true
+  image: "api-gateway"
+  replicaCount: 5
+  concurrency: 4
+  
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 50  # High scale for burst processing
+    targetCPUUtilizationPercentage: 80
+  
+  queues:
+    - name: "rhi-computation"
+      priority: 10
+    - name: "satellite-analysis"
+      priority: 8
+    - name: "forecasting"
+      priority: 7
+    - name: "reporting"
+      priority: 3
+
+# ── Network Policies (Zero-Trust) ─────────────────────────────────
+networkPolicy:
+  enabled: true
+  defaultDenyAll: true
+  allowedEgress:
+    - name: "postgres"
+      port: 5432
+    - name: "redis"
+      port: 6379
+    - name: "kafka"
+      port: 9092
+    - name: "external-apis"
+      ports: [443, 80]
+
+# ── Pod Security ──────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+
+# ── Monitoring ────────────────────────────────────────────────────
+serviceMonitor:
+  enabled: true
+  interval: "15s"
+  scrapeTimeout: "10s"
+  labels:
+    prometheus: "kube-prometheus"
+
+prometheusRule:
+  enabled: true
+  rules:
+    - alert: RouteIQAPIHighLatency
+      expr: histogram_quantile(0.95, routeiq_request_duration_seconds_bucket) > 1.0
+      for: 5m
+      severity: warning
+    - alert: RouteIQCriticalRHISegments
+      expr: routeiq_critical_segments_total > 500
+      for: 1m
+      severity: critical
+    - alert: RouteIQAgentDown
+      expr: routeiq_agents_online_total < 7
+      for: 2m
+      severity: critical
+    - alert: RouteIQMLDrift
+      expr: routeiq_model_drift_score > 0.05
+      for: 10m
+      severity: warning

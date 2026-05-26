@@ -1,0 +1,90 @@
+# ──────────────────────────────────────────────────────────────────
+# RouteIQ X — ArgoCD ApplicationSet
+# GitOps continuous deployment for all microservices
+# ──────────────────────────────────────────────────────────────────
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: routeiq-x-services
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - service: api-gateway
+            namespace: routeiq
+            port: "8000"
+            healthCheck: /api/health
+          - service: ai-engine
+            namespace: routeiq
+            port: "8002"
+            healthCheck: /health
+          - service: geospatial-engine
+            namespace: routeiq
+            port: "8001"
+            healthCheck: /health
+          - service: agents
+            namespace: routeiq
+            port: "8003"
+            healthCheck: /health
+          - service: optimizer
+            namespace: routeiq
+            port: "8004"
+            healthCheck: /health
+
+  template:
+    metadata:
+      name: "routeiq-{{service}}"
+    spec:
+      project: routeiq-x
+      source:
+        repoURL: "https://github.com/your-org/routeiq-x"
+        targetRevision: main
+        path: "infra/k8s/services/{{service}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - ApplyOutOfSyncOnly=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+---
+# ── ArgoCD Project ────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: routeiq-x
+  namespace: argocd
+spec:
+  description: "RouteIQ X Production Platform"
+  sourceRepos:
+    - "https://github.com/your-org/routeiq-x"
+  destinations:
+    - namespace: routeiq
+      server: https://kubernetes.default.svc
+    - namespace: routeiq-mlops
+      server: https://kubernetes.default.svc
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: Namespace
+  roles:
+    - name: deploy
+      policies:
+        - p, proj:routeiq-x:deploy, applications, sync, routeiq-x/*, allow
+    - name: read-only
+      policies:
+        - p, proj:routeiq-x:read-only, applications, get, routeiq-x/*, allow

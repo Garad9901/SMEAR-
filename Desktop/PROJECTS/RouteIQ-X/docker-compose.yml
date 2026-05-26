@@ -1,0 +1,353 @@
+version: '3.9'
+
+name: routeiq-x
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:15-3.4
+    container_name: routeiq-postgres
+    environment:
+      POSTGRES_USER: routeiq
+      POSTGRES_PASSWORD: routeiq_secret
+      POSTGRES_DB: routeiq_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U routeiq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: routeiq-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: routeiq-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: routeiq-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: routeiq-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: routeiq-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # ─── Application Services ─────────────────────────────────────
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: routeiq-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SECRET_KEY: your-super-secret-jwt-key-change-in-production
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      ENVIRONMENT: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/api-gateway:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  ingestion-worker:
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+    container_name: routeiq-ingestion
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/1
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
+      OSM_API_URL: https://overpass-api.de/api/interpreter
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+    volumes:
+      - ./services/ingestion:/app
+
+  geospatial-engine:
+    build:
+      context: ./services/geospatial
+      dockerfile: Dockerfile
+    container_name: routeiq-geospatial
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/geospatial:/app
+      - geospatial_cache:/tmp/geospatial
+
+  ai-engine:
+    build:
+      context: ./services/ai-engine
+      dockerfile: Dockerfile
+    container_name: routeiq-ai-engine
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/3
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_REGISTRY_PATH: /app/models
+    depends_on:
+      - postgres
+      - redis
+      - mlflow
+    volumes:
+      - ./services/ai-engine:/app
+      - model_storage:/app/models
+
+  agents-orchestrator:
+    build:
+      context: ./services/agents
+      dockerfile: Dockerfile
+    container_name: routeiq-agents
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/4
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-mock-key}
+      AI_ENGINE_URL: http://ai-engine:8002
+      GEOSPATIAL_URL: http://geospatial-engine:8001
+    depends_on:
+      - kafka
+      - redis
+      - ai-engine
+    volumes:
+      - ./services/agents:/app
+
+  optimizer:
+    build:
+      context: ./services/optimizer
+      dockerfile: Dockerfile
+    container_name: routeiq-optimizer
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/optimizer:/app
+
+  celery-worker:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: routeiq-celery-worker
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      - redis
+      - postgres
+
+  celery-beat:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: routeiq-celery-beat
+    command: celery -A app.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+      - postgres
+
+  flower:
+    image: mher/flower:2.0
+    container_name: routeiq-flower
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      FLOWER_PORT: 5555
+    depends_on:
+      - redis
+
+  # ─── MLOps ────────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.3
+    container_name: routeiq-mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db
+      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://routeiq:routeiq_secret@postgres:5432/routeiq_db --default-artifact-root /mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1
+    container_name: routeiq-airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://routeiq:routeiq_secret@postgres:5432/airflow_db
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://routeiq:routeiq_secret@postgres:5432/airflow_db
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/6
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: routeiq_admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./services/ingestion/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── Observability ────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: routeiq-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: routeiq-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: routeiq_grafana
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_INSTALL_PLUGINS: grafana-worldmap-panel,grafana-clock-panel
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: routeiq-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./infra/observability/loki-config.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: routeiq-jaeger
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+      - "4317:4317"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.99.0
+    container_name: routeiq-otel
+    ports:
+      - "4318:4318"
+      - "8888:8888"
+    volumes:
+      - ./infra/observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml
+    depends_on:
+      - jaeger
+
+volumes:
+  postgres_data:
+  redis_data:
+  zookeeper_data:
+  kafka_data:
+  geospatial_cache:
+  model_storage:
+  mlflow_artifacts:
+  airflow_logs:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+networks:
+  default:
+    name: routeiq-network
+    driver: bridge

@@ -1,0 +1,261 @@
+version: "3.9"
+
+# =============================================================================
+# AgroSense AI — Full Stack Docker Compose
+# Services: api, postgres, redis, mlflow, airflow, dashboard, nginx, minio, pgadmin
+# =============================================================================
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.1-python3.11
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+  volumes:
+    - ./etl/dags:/opt/airflow/dags
+    - ./etl/scripts:/opt/airflow/scripts
+    - airflow_logs:/opt/airflow/logs
+    - airflow_plugins:/opt/airflow/plugins
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL + PostGIS
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: agrosense_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis (Cache + Message Broker)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: agrosense_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Backend
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agrosense_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - ./backend:/app
+      - ./ml:/app/ml
+      - model_artifacts:/app/models
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ---------------------------------------------------------------------------
+  # MLflow Tracking Server
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: python:3.11-slim
+    container_name: agrosense_mlflow
+    restart: unless-stopped
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: s3://mlflow-artifacts
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    volumes:
+      - mlflow_data:/mlflow
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+      - minio
+    command: >
+      bash -c "pip install mlflow psycopg2-binary boto3 &&
+               mlflow server
+               --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+               --default-artifact-root s3://mlflow-artifacts
+               --host 0.0.0.0 --port 5000"
+
+  # ---------------------------------------------------------------------------
+  # Streamlit Dashboard
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: agrosense_dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      API_BASE_URL: http://api:8000
+    volumes:
+      - ./dashboard:/app
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+
+  # ---------------------------------------------------------------------------
+  # Apache Airflow — Webserver
+  # ---------------------------------------------------------------------------
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: agrosense_airflow_web
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Apache Airflow — Scheduler
+  # ---------------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: agrosense_airflow_scheduler
+    command: scheduler
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Apache Airflow — Init (one-shot)
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: agrosense_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username admin --firstname AgroSense --lastname Admin \
+          --role Admin --email admin@agrosense.ai --password admin123
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible object storage for MLflow artifacts)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: agrosense_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # pgAdmin (Database GUI)
+  # ---------------------------------------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: agrosense_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: agrosense_nginx
+    restart: unless-stopped
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+      - dashboard
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+  redis_data:
+  mlflow_data:
+  minio_data:
+  pgadmin_data:
+  model_artifacts:
+  airflow_logs:
+  airflow_plugins:
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  default:
+    name: agrosense_network
+    driver: bridge
